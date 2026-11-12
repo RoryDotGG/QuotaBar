@@ -23,6 +23,23 @@ struct Limit: Identifiable, Sendable, Codable {
         guard rate(now) > 0, projected(now) >= 100 else { return nil }
         return now + (100 - used) / rate(now)
     }
+
+    enum Pace {
+        case onPace, ahead, critical
+        var color: Color {
+            switch self {
+            case .onPace: .quotaMint
+            case .ahead: .orange
+            case .critical: .red
+            }
+        }
+    }
+
+    /// Shared by the panel rows and the menu bar glyph.
+    func pace(_ now: Date) -> Pace {
+        if used >= 90 { return .critical }
+        return runsOut(now) != nil ? .ahead : .onPace
+    }
 }
 
 enum FetchError: Error {
@@ -377,10 +394,7 @@ struct LimitRow: View {
 
     private var runsOut: Date? { limit.runsOut(now) }
     private var left: Double { max(100 - limit.used, 0) }
-    private var tint: Color {
-        if limit.used >= 90 { return .red }
-        return runsOut != nil ? .orange : .quotaMint
-    }
+    private var tint: Color { limit.pace(now).color }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -488,15 +502,19 @@ extension Color {
 /// The QuotaBar mark as a live menu bar glyph: a track, a fill and an even-pace tick.
 /// Template image, so macOS tints it for light, dark and highlighted menu bars.
 enum MenuGlyph {
-    static func image(fill: Double, tick: Double?) -> NSImage {
+    /// With `tint`, the fill is coloured by pace and the track and tick use the menu bar's
+    /// own label colour (resolved at draw time, so light and dark bars both work).
+    /// Without it, the whole glyph is a template image.
+    static func image(fill: Double, tick: Double?, tint: NSColor? = nil) -> NSImage {
         let img = NSImage(size: NSSize(width: 22, height: 14), flipped: false) { rect in
+            let ink = tint == nil ? NSColor.black : NSColor.labelColor
             let th: CGFloat = 6, w = rect.width - 2, x0: CGFloat = 1
             let y = (rect.height - th) / 2
-            NSColor.black.withAlphaComponent(0.32).setFill()
+            ink.withAlphaComponent(0.35).setFill()
             NSBezierPath(roundedRect: NSRect(x: x0, y: y, width: w, height: th), xRadius: th / 2, yRadius: th / 2).fill()
             let f = min(max(fill, 0), 1)
             if f > 0 {
-                NSColor.black.setFill()
+                (tint ?? ink).setFill()
                 NSBezierPath(roundedRect: NSRect(x: x0, y: y, width: max(w * f, th), height: th),
                              xRadius: th / 2, yRadius: th / 2).fill()
             }
@@ -506,13 +524,13 @@ enum MenuGlyph {
                 NSBezierPath(roundedRect: NSRect(x: x - 2.25, y: 0, width: 4.5, height: rect.height),
                              xRadius: 2.25, yRadius: 2.25).fill()
                 NSGraphicsContext.current?.compositingOperation = .sourceOver
-                NSColor.black.setFill()
+                ink.setFill()
                 NSBezierPath(roundedRect: NSRect(x: x - 1, y: 1, width: 2, height: rect.height - 2),
                              xRadius: 1, yRadius: 1).fill()
             }
             return true
         }
-        img.isTemplate = true
+        img.isTemplate = tint == nil
         return img
     }
 }
@@ -523,10 +541,12 @@ struct MenuLabel: View {
 
     var body: some View {
         if let h = store.headline {
-            let elapsed = h.elapsed(Date())
+            let now = Date()
+            let elapsed = h.elapsed(now)
+            let tint = NSColor(h.pace(now).color)
             Image(nsImage: showRemaining
-                  ? MenuGlyph.image(fill: (100 - h.used) / 100, tick: 1 - elapsed)
-                  : MenuGlyph.image(fill: h.used / 100, tick: elapsed))
+                  ? MenuGlyph.image(fill: (100 - h.used) / 100, tick: 1 - elapsed, tint: tint)
+                  : MenuGlyph.image(fill: h.used / 100, tick: elapsed, tint: tint))
             Text(showRemaining ? "\(Int(max(100 - h.used, 0).rounded()))% left" : "\(Int(h.used.rounded()))%")
         } else {
             Image(nsImage: MenuGlyph.image(fill: 0, tick: nil))

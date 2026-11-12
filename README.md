@@ -45,7 +45,8 @@ Each limit gets one bar. By default it shows **what's left**, draining like a fu
 - **Fill short of the tick** (orange): you're ahead of pace. It shows when you'd run out.
 - **Red**: 90% or more used.
 
-The menu bar glyph is the same bar, live, for whichever limit is closest to running out.
+The menu bar glyph is the same bar, live and in the same colours, for whichever limit is
+closest to running out.
 Switch to showing usage instead under `⋯` → **Show remaining**.
 
 Accounts without a 5-hour limit show their weekly limits only.

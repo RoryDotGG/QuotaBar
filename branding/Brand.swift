@@ -119,15 +119,23 @@ enum Demo {
 
 struct MenuBarPill: View {
     let text: String
+    var dark = true
+
     var body: some View {
+        // The glyph's track and tick use the drawing appearance, so draw it under the matching one.
+        let glyph = MenuGlyph.image(fill: 0.62, tick: 0.56, tint: NSColor(Limit.Pace.onPace.color))
+        let rendered = NSImage(size: glyph.size, flipped: false) { rect in
+            NSAppearance(named: dark ? .darkAqua : .aqua)!.performAsCurrentDrawingAppearance { glyph.draw(in: rect) }
+            return true
+        }
         HStack(spacing: 6) {
-            Image(nsImage: MenuGlyph.image(fill: 0.62, tick: 0.56)).renderingMode(.template)
+            Image(nsImage: rendered)
             Text(text).font(.system(size: 13, weight: .medium)).monospacedDigit()
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(dark ? .white : .black)
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
-        .background(Capsule().fill(.white.opacity(0.14)))
+        .background(Capsule().fill(dark ? .white.opacity(0.14) : .black.opacity(0.07)))
     }
 }
 
@@ -166,10 +174,7 @@ struct ReadmeShot: View {
     let dark: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            MenuBarPill(text: "62% left")
-                .foregroundStyle(dark ? .white : .black)
-                .environment(\.colorScheme, dark ? .dark : .light)
-                .colorMultiply(dark ? .white : .black)
+            MenuBarPill(text: "62% left", dark: dark)
             PanelShot(dark: dark)
                 .shadow(color: .black.opacity(dark ? 0.5 : 0.18), radius: 24, y: 10)
         }
