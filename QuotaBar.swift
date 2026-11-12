@@ -144,6 +144,87 @@ enum UsageAPI {
     }
 }
 
+// MARK: - Install
+
+/// Homebrew installs live in a versioned Cellar folder that `brew upgrade` deletes, so
+/// anything that stores our path (login items, Finder aliases) breaks on upgrade.
+/// For Homebrew installs: start at login via `brew services` (fixed opt path), and
+/// repair the ~/Applications alias on every launch. Checkout builds use SMAppService.
+enum Install {
+    static let bundleURL = Bundle.main.bundleURL.resolvingSymlinksInPath()
+
+    /// e.g. /opt/homebrew for /opt/homebrew/Cellar/quotabar/1.1.0/QuotaBar.app
+    static let brewPrefix: String? = {
+        let path = bundleURL.path
+        guard let r = path.range(of: "/Cellar/quotabar/") else { return nil }
+        return String(path[..<r.lowerBound])
+    }()
+
+    static var isHomebrew: Bool { brewPrefix != nil }
+
+    private static var agentPlist: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/homebrew.mxcl.quotabar.plist")
+    }
+
+    static var startsAtLogin: Bool {
+        isHomebrew ? FileManager.default.fileExists(atPath: agentPlist.path)
+                   : SMAppService.mainApp.status == .enabled
+    }
+
+    /// Blocking (brew takes a few seconds); call off the main actor.
+    static func setStartsAtLogin(_ on: Bool) {
+        guard let prefix = brewPrefix else {
+            try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+            return
+        }
+        // `start` launches a fresh copy via `open -n`, which then replaces this one.
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "\(prefix)/bin/brew")
+        p.arguments = ["services", on ? "start" : "stop", "quotabar"]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run()
+        p.waitUntilExit()
+    }
+
+    static func onLaunch() {
+        quitOlderCopies()
+        guard isHomebrew else { return }
+        // A login item from 1.0.x points at a Cellar folder that no longer exists.
+        if SMAppService.mainApp.status != .notRegistered { try? SMAppService.mainApp.unregister() }
+        repairAlias()
+    }
+
+    /// Newest launch wins, so an upgrade or a second start never leaves two in the menu bar.
+    private static func quitOlderCopies() {
+        let me = ProcessInfo.processInfo.processIdentifier
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: "local.quotabar")
+        where app.processIdentifier != me {
+            app.terminate()
+        }
+    }
+
+    /// Keeps ~/Applications/QuotaBar.app (a Finder alias, so launchers index it) pointing
+    /// at this copy. Never replaces anything that isn't already an alias.
+    private static func repairAlias() {
+        let fm = FileManager.default
+        let dir = fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications")
+        let alias = dir.appendingPathComponent("QuotaBar.app")
+        if fm.fileExists(atPath: alias.path) {
+            let isAlias = (try? alias.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile ?? false
+            guard isAlias else { return }
+            if (try? URL(resolvingAliasFileAt: alias))?.resolvingSymlinksInPath() == bundleURL { return }
+            try? fm.removeItem(at: alias)
+        }
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let data = try? bundleURL.bookmarkData(options: .suitableForBookmarkFile,
+                                                  includingResourceValuesForKeys: nil, relativeTo: nil) {
+            try? URL.writeBookmarkData(data, to: alias)
+        }
+    }
+}
+
 // MARK: - State
 
 @MainActor
@@ -152,15 +233,18 @@ final class UsageStore: ObservableObject {
     @Published var error: String?
     @Published var updatedAt: Date?
     @Published var loading = false
-    @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @Published var launchAtLogin = Install.startsAtLogin
 
     func setLaunchAtLogin(_ on: Bool) {
-        try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
-        launchAtLogin = SMAppService.mainApp.status == .enabled
+        launchAtLogin = on  // optimistic; corrected once brew/SMAppService returns
+        Task.detached {
+            Install.setStartsAtLogin(on)
+            await MainActor.run { self.refreshLoginStatus() }
+        }
     }
 
-    /// Re-read in case it was changed in System Settings.
-    func refreshLoginStatus() { launchAtLogin = SMAppService.mainApp.status == .enabled }
+    /// Re-read in case it was changed elsewhere (System Settings, `brew services`).
+    func refreshLoginStatus() { launchAtLogin = Install.startsAtLogin }
 
     // The endpoint returns 429 (with retry-after: 0) if polled hard; weekly numbers move slowly.
     private static let normalInterval: TimeInterval = 300
@@ -180,6 +264,7 @@ final class UsageStore: ObservableObject {
     private var interval = normalInterval
 
     init() {
+        Install.onLaunch()
         if let data = UserDefaults.standard.data(forKey: "saved"),
            let s = try? JSONDecoder().decode(Saved.self, from: data) {
             (limits, updatedAt, lastAttempt, nextAllowed, interval) =

@@ -15,10 +15,17 @@ Native SwiftUI, one source file, no dependencies.
 
 ```bash
 brew install rorydotgg/tap/quotabar
+brew services start quotabar
 ```
 
-Homebrew builds it from source on your machine, then tells you how to open it. Both
-repos are private, so git needs GitHub access to them (for example
+The first command builds it from source on your machine. The second starts it now
+and at every login, and `brew upgrade` restarts it on the new version. No signing is
+needed: a locally built app has no quarantine flag, so Gatekeeper never checks it.
+
+On launch it keeps a Finder alias at `~/Applications/QuotaBar.app` pointing at the
+current version, so Spotlight and Raycast can find it.
+
+Both repos are private, so git needs GitHub access to them (for example
 `gh auth setup-git`).
 
 ## Build from a checkout
@@ -49,7 +56,8 @@ They are noisy in the first day of a weekly window.
 ## Settings
 
 Under the `⋯` menu: **Show remaining** (default on; off shows usage instead) and
-**Open at login**. Open at login works best once the app is in `~/Applications`.
+**Open at login**. For Homebrew installs the toggle runs `brew services start/stop
+quotabar`; for checkout builds it uses a normal macOS login item.
 
 ## Caveats
 
