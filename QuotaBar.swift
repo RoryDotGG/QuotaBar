@@ -179,10 +179,15 @@ enum Install {
             try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
             return
         }
-        // `start` launches a fresh copy via `open -n`, which then replaces this one.
+        // `restart`, not `start`: start fails ("Bootstrap failed: 5") if the job is
+        // already loaded. Either way a fresh copy launches and replaces this one.
+        brewServices(prefix, on ? "restart" : "stop")
+    }
+
+    private static func brewServices(_ prefix: String, _ verb: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "\(prefix)/bin/brew")
-        p.arguments = ["services", on ? "start" : "stop", "quotabar"]
+        p.arguments = ["services", verb, "quotabar"]
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         try? p.run()
@@ -198,6 +203,11 @@ enum Install {
         let next = "\(prefix)/opt/quotabar/QuotaBar.app"
         guard FileManager.default.fileExists(atPath: next) else { return }
         relaunched = true
+        // With the service on, restart it so its `open -W` tracks the new copy.
+        if startsAtLogin {
+            Thread.detachNewThread { brewServices(prefix, "restart") }
+            return
+        }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         p.arguments = ["-n", next]
