@@ -11,7 +11,17 @@ Native SwiftUI, one source file, no dependencies.
 - Claude Code CLI installed and signed in with a claude.ai plan (`claude auth login`).
   QuotaBar reads the CLI's keychain item `Claude Code-credentials`.
 
-## Build and run
+## Install
+
+```bash
+brew install rorydotgg/tap/quotabar
+```
+
+Homebrew builds it from source on your machine, then tells you how to open it. Both
+repos are private, so git needs GitHub access to them (for example
+`gh auth setup-git`).
+
+## Build from a checkout
 
 ```bash
 ./build.sh
