@@ -57,7 +57,16 @@ Accounts without a 5-hour limit show their weekly limits only.
   and sends it only to `api.anthropic.com`.
 - It never stores, logs or refreshes the token itself. When the token has expired it
   runs `claude auth status`, which renews it without using any of your plan.
+- Homebrew installs also fetch the public formula from `raw.githubusercontent.com` at
+  launch and every 6 hours, to see if there's a newer version. Nothing is sent.
 - No analytics, no other network calls.
+
+## Updates
+
+When a newer version is out, the panel shows **x.y.z is available**. Click
+**Update** and it runs `brew update` then `brew upgrade quotabar`, and switches to the
+new version. If brew fails, the panel shows its error. Updating from Terminal works the
+same way. Your version is shown at the top right of the panel.
 
 ## How it works
 

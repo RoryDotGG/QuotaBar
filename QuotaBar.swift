@@ -268,10 +268,110 @@ enum Install {
     }
 }
 
+// MARK: - Updates
+
+/// Homebrew installs only. The tap's formula is the source of truth, because its tag is
+/// exactly what `brew upgrade` would install.
+enum Updates {
+    static let formulaURL = URL(string: "https://raw.githubusercontent.com/RoryDotGG/homebrew-tap/main/Formula/quotabar.rb")!
+    static let checkInterval: TimeInterval = 6 * 3600
+
+    static var current: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    }
+
+    /// The version in `tag: "v1.2.3"`, or nil if the formula doesn't have one.
+    static func formulaVersion(_ text: String) -> String? {
+        let re = try! NSRegularExpression(pattern: #"tag:\s*"v(\d+(?:\.\d+)*)""#)
+        let range = NSRange(text.startIndex..., in: text)
+        guard let m = re.firstMatch(in: text, range: range), let r = Range(m.range(at: 1), in: text) else { return nil }
+        return String(text[r])
+    }
+
+    /// Numeric, component-wise: 1.10.0 is newer than 1.9.0; missing parts count as 0.
+    static func isNewer(_ a: String, than b: String) -> Bool {
+        let x = a.split(separator: ".").map { Int($0) ?? 0 }
+        let y = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(x.count, y.count) {
+            let (p, q) = (i < x.count ? x[i] : 0, i < y.count ? y[i] : 0)
+            if p != q { return p > q }
+        }
+        return false
+    }
+
+    /// A newer version than this one, if the formula has one.
+    static func available() async -> String? {
+        guard Install.isHomebrew,
+              // raw.githubusercontent sends max-age=300; skip the on-disk cache so a release shows up promptly.
+              let (data, resp) = try? await URLSession.shared.data(
+                  for: URLRequest(url: formulaURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let latest = formulaVersion(String(decoding: data, as: UTF8.self)),
+              isNewer(latest, than: current)
+        else { return nil }
+        return latest
+    }
+
+    /// `brew update` first: without it brew may use a stale tap and find nothing to upgrade.
+    /// Blocking (up to a few minutes); call off the main actor. Returns an error message, or nil.
+    static func upgrade() -> String? {
+        guard let prefix = Install.brewPrefix else { return "Not installed with Homebrew." }
+        for args in [["update", "--quiet"], ["upgrade", "quotabar"]] {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "\(prefix)/bin/brew")
+            p.arguments = args
+            var env = ProcessInfo.processInfo.environment
+            env["HOMEBREW_NO_AUTO_UPDATE"] = "1"  // we just ran `brew update`
+            env["HOMEBREW_NO_ENV_HINTS"] = "1"
+            p.environment = env
+            let err = Pipe()
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = err
+            do { try p.run() } catch { return "Couldn't run brew: \(error.localizedDescription)" }
+            let output = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            p.waitUntilExit()
+            if p.terminationStatus != 0 {
+                let last = output.split(separator: "\n").last(where: { $0.contains("Error") }) ?? output.split(separator: "\n").last
+                return "brew \(args[0]) failed: \(last.map(String.init) ?? "exit \(p.terminationStatus)")"
+            }
+        }
+        return nil
+    }
+}
+
 // MARK: - State
 
 @MainActor
 final class UsageStore: ObservableObject {
+    @Published var updateAvailable: String?
+    @Published var updating = false
+    @Published var updateError: String?
+    private var lastUpdateCheck = Date.distantPast
+
+    private func checkForUpdate() async {
+        guard Install.isHomebrew, !updating, Date().timeIntervalSince(lastUpdateCheck) >= Updates.checkInterval else { return }
+        lastUpdateCheck = Date()
+        updateAvailable = await Updates.available()
+    }
+
+    func installUpdate() {
+        guard !updating else { return }
+        updating = true
+        updateError = nil
+        Task.detached {
+            let failure = Updates.upgrade()
+            await MainActor.run {
+                self.updating = false
+                if let failure {
+                    self.updateError = failure
+                } else {
+                    // Our Cellar folder is gone now; hand over to the new version right away.
+                    Install.relaunchIfUpgraded()
+                }
+            }
+        }
+    }
+
     @Published var limits: [Limit] = []
     @Published var error: String?
     @Published var updatedAt: Date?
@@ -317,6 +417,7 @@ final class UsageStore: ObservableObject {
         Task {
             while !Task.isCancelled {
                 Install.relaunchIfUpgraded()
+                await checkForUpdate()
                 await refresh(manual: false)
                 try? await Task.sleep(for: .seconds(30))  // cheap wake-up; refresh decides whether to call
             }
@@ -426,6 +527,43 @@ struct LimitRow: View {
     }
 }
 
+struct UpdateRow: View {
+    let version: String
+    let updating: Bool
+    let error: String?
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .foregroundStyle(Color.quotaMint)
+                    .font(.system(size: 14))
+                Text(updating ? "Updating to \(version)…" : "\(version) is available")
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Spacer()
+                if updating {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Update", action: action)
+                        .controlSize(.small)
+                        .help("Runs brew upgrade quotabar")
+                }
+            }
+            if let error {
+                Text(error)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.quotaMint.opacity(0.1)))
+    }
+}
+
 struct Panel: View {
     @ObservedObject var store: UsageStore
     @AppStorage("showRemaining") private var showRemaining = true
@@ -439,7 +577,14 @@ struct Panel: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { ctx in
             VStack(alignment: .leading, spacing: 14) {
-                Text("Claude plan usage").font(.system(size: 13, weight: .semibold))
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Claude plan usage").font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Text("v\(Updates.current)")
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .help("QuotaBar version")
+                }
 
                 if store.limits.isEmpty && store.error == nil {
                     if store.updatedAt == nil {
@@ -456,6 +601,12 @@ struct Panel: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let version = store.updateAvailable {
+                    UpdateRow(version: version, updating: store.updating, error: store.updateError) {
+                        store.installUpdate()
+                    }
                 }
 
                 Divider()
