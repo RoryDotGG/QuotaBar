@@ -302,9 +302,8 @@ enum Updates {
     /// A newer version than this one, if the formula has one.
     static func available() async -> String? {
         guard Install.isHomebrew,
-              // raw.githubusercontent sends max-age=300; skip the on-disk cache so a release shows up promptly.
-              let (data, resp) = try? await URLSession.shared.data(
-                  for: URLRequest(url: formulaURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)),
+              // Default caching: a new release can take a few minutes to show up, which is fine.
+              let (data, resp) = try? await URLSession.shared.data(for: URLRequest(url: formulaURL, timeoutInterval: 15)),
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let latest = formulaVersion(String(decoding: data, as: UTF8.self)),
               isNewer(latest, than: current)
