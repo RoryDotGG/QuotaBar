@@ -162,13 +162,14 @@ enum Install {
 
     static var isHomebrew: Bool { brewPrefix != nil }
 
-    private static var agentPlist: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/homebrew.mxcl.quotabar.plist")
+    // Homebrew 7 labels services sh.brew.<name>; older versions used homebrew.mxcl.<name>.
+    private static var agentPlists: [String] {
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents")
+        return ["sh.brew.quotabar.plist", "homebrew.mxcl.quotabar.plist"].map { dir.appendingPathComponent($0).path }
     }
 
     static var startsAtLogin: Bool {
-        isHomebrew ? FileManager.default.fileExists(atPath: agentPlist.path)
+        isHomebrew ? agentPlists.contains(where: FileManager.default.fileExists)
                    : SMAppService.mainApp.status == .enabled
     }
 
