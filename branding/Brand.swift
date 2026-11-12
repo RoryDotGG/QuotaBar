@@ -233,10 +233,22 @@ struct SocialCard: View {
 func save(_ view: some View, _ path: String, scale: CGFloat = 1) {
     let r = ImageRenderer(content: view)
     r.scale = scale
-    guard let cg = r.cgImage,
-          let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
+    // .jpg for full-bleed gradients: as PNG the social card is 1.2 MB, over GitHub's 1 MB cap.
+    // Flattened to 8-bit sRGB first, or the JPEG encoder shifts the brand colours.
+    let jpeg = path.hasSuffix(".jpg")
+    guard var cg = r.cgImage else { fatalError("render failed: \(path)") }
+    if jpeg {
+        let ctx = CGContext(data: nil, width: cg.width, height: cg.height, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        cg = ctx.makeImage()!
+    }
+    guard let data = NSBitmapImageRep(cgImage: cg).representation(
+              using: jpeg ? .jpeg : .png,
+              properties: jpeg ? [.compressionFactor: 0.92] : [:])
     else { fatalError("render failed: \(path)") }
-    try! png.write(to: URL(fileURLWithPath: path))
+    try! data.write(to: URL(fileURLWithPath: path))
     print("wrote \(path) (\(cg.width)x\(cg.height))")
 }
 
@@ -256,6 +268,6 @@ struct RenderBrand {
         save(Lockup(dark: false), "\(out)/logo-light.png", scale: 2)
         save(ReadmeShot(dark: true), "\(out)/screenshot-dark.png", scale: 2)
         save(ReadmeShot(dark: false), "\(out)/screenshot-light.png", scale: 2)
-        save(SocialCard(), "\(out)/social-preview.png")
+        save(SocialCard(), "\(out)/social-preview.jpg")
     }
 }
