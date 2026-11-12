@@ -345,7 +345,6 @@ final class UsageStore: ObservableObject {
 
     /// The limit that matters most: highest usage among windows still open.
     var headline: Limit? { limits.max { $0.used < $1.used } }
-    var atRisk: Bool { limits.contains { $0.runsOut(Date()) != nil } }
 }
 
 // MARK: - Views
@@ -380,7 +379,7 @@ struct LimitRow: View {
     private var left: Double { max(100 - limit.used, 0) }
     private var tint: Color {
         if limit.used >= 90 { return .red }
-        return runsOut != nil ? .orange : .accentColor
+        return runsOut != nil ? .orange : .quotaMint
     }
 
     var body: some View {
@@ -481,16 +480,56 @@ struct Panel: View {
     }
 }
 
+extension Color {
+    /// Brand colour: "on pace". Warnings stay system orange and red.
+    static let quotaMint = Color(red: 0.24, green: 0.86, blue: 0.59)  // #3DDC97
+}
+
+/// The QuotaBar mark as a live menu bar glyph: a track, a fill and an even-pace tick.
+/// Template image, so macOS tints it for light, dark and highlighted menu bars.
+enum MenuGlyph {
+    static func image(fill: Double, tick: Double?) -> NSImage {
+        let img = NSImage(size: NSSize(width: 22, height: 14), flipped: false) { rect in
+            let th: CGFloat = 6, w = rect.width - 2, x0: CGFloat = 1
+            let y = (rect.height - th) / 2
+            NSColor.black.withAlphaComponent(0.32).setFill()
+            NSBezierPath(roundedRect: NSRect(x: x0, y: y, width: w, height: th), xRadius: th / 2, yRadius: th / 2).fill()
+            let f = min(max(fill, 0), 1)
+            if f > 0 {
+                NSColor.black.setFill()
+                NSBezierPath(roundedRect: NSRect(x: x0, y: y, width: max(w * f, th), height: th),
+                             xRadius: th / 2, yRadius: th / 2).fill()
+            }
+            if let tick {
+                let x = x0 + w * min(max(tick, 0), 1)
+                NSGraphicsContext.current?.compositingOperation = .clear  // gap either side of the tick
+                NSBezierPath(roundedRect: NSRect(x: x - 2.25, y: 0, width: 4.5, height: rect.height),
+                             xRadius: 2.25, yRadius: 2.25).fill()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+                NSColor.black.setFill()
+                NSBezierPath(roundedRect: NSRect(x: x - 1, y: 1, width: 2, height: rect.height - 2),
+                             xRadius: 1, yRadius: 1).fill()
+            }
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+}
+
 struct MenuLabel: View {
     @ObservedObject var store: UsageStore
     @AppStorage("showRemaining") private var showRemaining = true
 
     var body: some View {
         if let h = store.headline {
-            Image(systemName: store.atRisk ? "gauge.with.dots.needle.100percent" : "gauge.with.dots.needle.33percent")
+            let elapsed = h.elapsed(Date())
+            Image(nsImage: showRemaining
+                  ? MenuGlyph.image(fill: (100 - h.used) / 100, tick: 1 - elapsed)
+                  : MenuGlyph.image(fill: h.used / 100, tick: elapsed))
             Text(showRemaining ? "\(Int(max(100 - h.used, 0).rounded()))% left" : "\(Int(h.used.rounded()))%")
         } else {
-            Image(systemName: "gauge.with.dots.needle.0percent")
+            Image(nsImage: MenuGlyph.image(fill: 0, tick: nil))
         }
     }
 }
