@@ -152,6 +152,15 @@ final class UsageStore: ObservableObject {
     @Published var error: String?
     @Published var updatedAt: Date?
     @Published var loading = false
+    @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
+
+    func setLaunchAtLogin(_ on: Bool) {
+        try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+        launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    /// Re-read in case it was changed in System Settings.
+    func refreshLoginStatus() { launchAtLogin = SMAppService.mainApp.status == .enabled }
 
     // The endpoint returns 429 (with retry-after: 0) if polled hard; weekly numbers move slowly.
     private static let normalInterval: TimeInterval = 300
@@ -296,13 +305,10 @@ struct Panel: View {
     @ObservedObject var store: UsageStore
     @AppStorage("showRemaining") private var showRemaining = true
 
-    // Plain binding, not @State: @State is a macro in recent SDKs, and macro plugins
-    // fail to load in Homebrew's build environment. The menu re-reads status on open.
+    // Lives in the store, not @State: @State is a macro in recent SDKs, and macro
+    // plugins fail to load in Homebrew's build environment.
     private var launchAtLogin: Binding<Bool> {
-        Binding(
-            get: { SMAppService.mainApp.status == .enabled },
-            set: { on in try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister() }
-        )
+        Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) })
     }
 
     var body: some View {
@@ -358,6 +364,7 @@ struct Panel: View {
             }
             .padding(16)
             .frame(width: 300)
+            .onAppear { store.refreshLoginStatus() }
         }
     }
 }
