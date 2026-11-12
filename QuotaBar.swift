@@ -294,8 +294,16 @@ struct LimitRow: View {
 
 struct Panel: View {
     @ObservedObject var store: UsageStore
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @AppStorage("showRemaining") private var showRemaining = true
+
+    // Plain binding, not @State: @State is a macro in recent SDKs, and macro plugins
+    // fail to load in Homebrew's build environment. The menu re-reads status on open.
+    private var launchAtLogin: Binding<Bool> {
+        Binding(
+            get: { SMAppService.mainApp.status == .enabled },
+            set: { on in try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister() }
+        )
+    }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { ctx in
@@ -337,7 +345,7 @@ struct Panel: View {
                     .help(store.canRefreshNow ? "Refresh" : "Checked recently")
                     Menu {
                         Toggle("Show remaining", isOn: $showRemaining)
-                        Toggle("Open at login", isOn: $launchAtLogin)
+                        Toggle("Open at login", isOn: launchAtLogin)
                         Divider()
                         Button("Quit QuotaBar") { NSApp.terminate(nil) }
                     } label: {
@@ -350,10 +358,6 @@ struct Panel: View {
             }
             .padding(16)
             .frame(width: 300)
-        }
-        .onChange(of: launchAtLogin) { _, on in
-            do { try on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister() }
-            catch { launchAtLogin = SMAppService.mainApp.status == .enabled }
         }
     }
 }
