@@ -189,6 +189,21 @@ enum Install {
         p.waitUntilExit()
     }
 
+    /// `brew upgrade` deletes our Cellar folder but doesn't restart us. When that happens,
+    /// open the new version from the stable opt path; it quits this copy on launch.
+    private static var relaunched = false
+    static func relaunchIfUpgraded() {
+        guard let prefix = brewPrefix, !relaunched,
+              !FileManager.default.fileExists(atPath: bundleURL.path) else { return }
+        let next = "\(prefix)/opt/quotabar/QuotaBar.app"
+        guard FileManager.default.fileExists(atPath: next) else { return }
+        relaunched = true
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-n", next]
+        try? p.run()
+    }
+
     static func onLaunch() {
         quitOlderCopies()
         guard isHomebrew else { return }
@@ -274,6 +289,7 @@ final class UsageStore: ObservableObject {
         }
         Task {
             while !Task.isCancelled {
+                Install.relaunchIfUpgraded()
                 await refresh(manual: false)
                 try? await Task.sleep(for: .seconds(30))  // cheap wake-up; refresh decides whether to call
             }
