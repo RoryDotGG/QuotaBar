@@ -36,9 +36,97 @@ struct Limit: Identifiable, Sendable, Codable {
     }
 
     /// Shared by the panel rows and the menu bar glyph.
-    func pace(_ now: Date) -> Pace {
+    func pace(_ f: Forecast) -> Pace {
         if used >= 90 { return .critical }
-        return runsOut(now) != nil ? .ahead : .onPace
+        return f.runsOut != nil ? .ahead : .onPace
+    }
+
+    func linear(_ now: Date) -> Forecast { Forecast(projected: projected(now), runsOut: runsOut(now), learned: false) }
+}
+
+struct Forecast {
+    let projected: Double  // % used at reset
+    let runsOut: Date?
+    let learned: Bool  // from your usage pattern, not a straight line
+}
+
+// MARK: - Learning
+
+/// Learns how fast each limit usually fills in each hour of the week (local time), so the
+/// forecast follows your routine: quiet nights and weekends stop counting as burn, and a
+/// heavy Monday doesn't predict a heavy Saturday. Trains on every reading; no raw history kept.
+struct Patterns: Codable {
+    struct Bucket: Codable {
+        var used = 0.0, hours = 0.0, last = Date.distantPast
+        mutating func add(used u: Double, hours h: Double, at t: Date) {
+            let keep = pow(0.5, max(t.timeIntervalSince(last), 0) / Patterns.halfLife)  // older weeks fade
+            (used, hours, last) = (used * keep + u, hours * keep + h, t)
+        }
+    }
+    struct Profile: Codable {
+        var buckets = Array(repeating: Bucket(), count: 168)
+        var lastUsed: Double, lastAt: Date, lastReset: Date
+        var hours: Double { buckets.reduce(0) { $0 + $1.hours } }
+    }
+    var profiles: [String: Profile] = [:]
+
+    static let halfLife: TimeInterval = 28 * 86400
+    static let maxGap: TimeInterval = 12 * 3600  // a longer gap (Mac off for days) teaches nothing
+    static let learnedHours = 48.0
+
+    static func hourOfWeek(_ d: Date) -> Int {
+        let c = Calendar.current.dateComponents([.weekday, .hour], from: d)
+        return ((c.weekday ?? 1) - 1) * 24 + (c.hour ?? 0)
+    }
+
+    /// Walks from..<to in pieces that end on local hour boundaries.
+    static func segments(_ from: Date, _ to: Date, _ body: (Date, Int, TimeInterval) -> Void) {
+        var t = from
+        while t < to {
+            let next = Calendar.current.nextDate(after: t, matching: DateComponents(minute: 0, second: 0),
+                                                 matchingPolicy: .nextTime) ?? t + 3600
+            let end = min(next, to)
+            body(t, hourOfWeek(t), end.timeIntervalSince(t))
+            t = end
+        }
+    }
+
+    mutating func record(_ limits: [Limit], at now: Date) {
+        for l in limits {
+            guard var p = profiles[l.id] else {
+                profiles[l.id] = Profile(lastUsed: l.used, lastAt: now, lastReset: l.resetsAt)
+                continue
+            }
+            var (from, base) = (p.lastAt, p.lastUsed)
+            if abs(l.resetsAt.timeIntervalSince(p.lastReset)) > 3600 { (from, base) = (max(from, l.start), 0) }  // new window
+            let dt = now.timeIntervalSince(from), delta = l.used - base
+            // ponytail: usage in a gap is spread evenly across it; fine for 5-minute polls and short sleeps
+            if dt > 0, dt <= Self.maxGap, delta >= 0 {
+                Self.segments(from, now) { _, b, s in p.buckets[b].add(used: delta * s / dt, hours: s / 3600, at: now) }
+            }
+            (p.lastUsed, p.lastAt, p.lastReset) = (l.used, now, l.resetsAt)
+            profiles[l.id] = p
+        }
+    }
+
+    func learnedHours(_ id: String) -> Double { profiles[id]?.hours ?? 0 }
+
+    func forecast(_ l: Limit, now: Date) -> Forecast {
+        guard let p = profiles[l.id], p.hours >= Self.learnedHours else { return l.linear(now) }
+        let mean = p.buckets.reduce(0) { $0 + $1.used } / p.hours
+        func rate(_ b: Int) -> Double { p.buckets[b].hours >= 0.25 ? p.buckets[b].used / p.buckets[b].hours : mean }
+        // Shape from history, level from this window: a heavier week than usual scales the rest of it.
+        var expected = 0.0
+        Self.segments(l.start, now) { _, b, s in expected += rate(b) * s / 3600 }
+        let scale = expected >= 2 ? min(max(l.used / expected, 0.25), 4) : 1
+        var cum = l.used
+        var out: Date? = l.used >= 100 ? now : nil
+        Self.segments(now, l.resetsAt) { t, b, s in
+            let add = rate(b) * scale * s / 3600
+            if out == nil, add > 0, cum + add >= 100 { out = t + s * (100 - cum) / add }
+            cum += add
+        }
+        return Forecast(projected: cum, runsOut: out, learned: true)
     }
 }
 
@@ -433,6 +521,10 @@ final class UsageStore: ObservableObject {
         do {
             limits = try await UsageAPI.fetch()
             updatedAt = Date()
+            if UserDefaults.standard.bool(forKey: "learnPatterns") {  // experimental, off by default
+                patterns.record(limits, at: updatedAt!)
+                if let data = try? JSONEncoder().encode(patterns) { UserDefaults.standard.set(data, forKey: "patterns") }
+            }
             error = nil
             interval = Self.normalInterval
         } catch FetchError.badResponse(429) {
@@ -462,6 +554,14 @@ final class UsageStore: ObservableObject {
 
     /// The limit that matters most: highest usage among windows still open.
     var headline: Limit? { limits.max { $0.used < $1.used } }
+
+    @Published var patterns: Patterns = {
+        guard let data = UserDefaults.standard.data(forKey: "patterns"),
+              let p = try? JSONDecoder().decode(Patterns.self, from: data) else { return Patterns() }
+        return p
+    }()
+
+    func forecast(_ l: Limit, _ now: Date) -> Forecast { patterns.forecast(l, now: now) }
 }
 
 // MARK: - Views
@@ -490,11 +590,12 @@ struct PaceBar: View {
 struct LimitRow: View {
     let limit: Limit
     let now: Date
+    var forecast: Forecast? = nil  // nil: straight-line pace
     @AppStorage("showRemaining") private var showRemaining = true
 
-    private var runsOut: Date? { limit.runsOut(now) }
+    private var f: Forecast { forecast ?? limit.linear(now) }
     private var left: Double { max(100 - limit.used, 0) }
-    private var tint: Color { limit.pace(now).color }
+    private var tint: Color { limit.pace(f).color }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -509,13 +610,13 @@ struct LimitRow: View {
                     pace: showRemaining ? 1 - limit.elapsed(now) : limit.elapsed(now),
                     tint: tint)
             Group {
-                if let runsOut {
-                    Text("At this pace you run out \(runsOut.formatted(.relative(presentation: .named))), \(runsOut.formatted(.dateTime.weekday().hour().minute()))")
+                if let runsOut = f.runsOut {
+                    Text("\(f.learned ? "On your routine" : "At this pace") you run out \(runsOut.formatted(.relative(presentation: .named))), \(runsOut.formatted(.dateTime.weekday().hour().minute()))")
                         .foregroundStyle(tint)
                 } else if showRemaining {
-                    Text("On pace to have \(Int((100 - limit.projected(now)).rounded()))% left at reset")
+                    Text("\(f.learned ? "On your routine you'll have" : "On pace to have") \(Int((100 - f.projected).rounded()))% left at reset")
                 } else {
-                    Text("On pace for \(Int(limit.projected(now).rounded()))% by reset")
+                    Text("\(f.learned ? "On your routine you'll reach" : "On pace for") \(Int(f.projected.rounded()))% by reset")
                 }
             }
             .font(.system(size: 11))
@@ -566,6 +667,7 @@ struct UpdateRow: View {
 struct Panel: View {
     @ObservedObject var store: UsageStore
     @AppStorage("showRemaining") private var showRemaining = true
+    @AppStorage("learnPatterns") private var learnPatterns = false
 
     // Lives in the store, not @State: @State is a macro in recent SDKs, and macro
     // plugins fail to load in Homebrew's build environment.
@@ -593,7 +695,18 @@ struct Panel: View {
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                 }
-                ForEach(store.limits) { LimitRow(limit: $0, now: ctx.date) }
+                ForEach(store.limits) {
+                    LimitRow(limit: $0, now: ctx.date, forecast: learnPatterns ? store.forecast($0, ctx.date) : nil)
+                }
+
+                if learnPatterns, let h = store.headline {
+                    let hours = store.patterns.learnedHours(h.id)
+                    Text(hours >= Patterns.learnedHours
+                         ? "Forecasts follow your usual week (\(Int(hours / 24)) days learned)"
+                         : "Learning your usage pattern: \(Int(hours)) of \(Int(Patterns.learnedHours)) hours")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .help("QuotaBar learns how much you use each hour of the week, from its own readings. Until then, forecasts assume an even pace.")
+                }
 
                 if let error = store.error {
                     Label(error, systemImage: "exclamationmark.circle")
@@ -627,6 +740,7 @@ struct Panel: View {
                     Menu {
                         Toggle("Show remaining", isOn: $showRemaining)
                         Toggle("Open at login", isOn: launchAtLogin)
+                        Toggle("Learn my usage pattern (Experimental)", isOn: $learnPatterns)
                         Divider()
                         Button("Quit QuotaBar") { NSApp.terminate(nil) }
                     } label: {
@@ -688,12 +802,13 @@ enum MenuGlyph {
 struct MenuLabel: View {
     @ObservedObject var store: UsageStore
     @AppStorage("showRemaining") private var showRemaining = true
+    @AppStorage("learnPatterns") private var learnPatterns = false
 
     var body: some View {
         if let h = store.headline {
             let now = Date()
             let elapsed = h.elapsed(now)
-            let tint = NSColor(h.pace(now).color)
+            let tint = NSColor(h.pace(learnPatterns ? store.forecast(h, now) : h.linear(now)).color)
             Image(nsImage: showRemaining
                   ? MenuGlyph.image(fill: (100 - h.used) / 100, tick: 1 - elapsed, tint: tint)
                   : MenuGlyph.image(fill: h.used / 100, tick: elapsed, tint: tint))

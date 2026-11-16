@@ -59,6 +59,8 @@ Accounts without a 5-hour limit show their weekly limits only.
   runs `claude auth status`, which renews it without using any of your plan.
 - Homebrew installs also fetch the public formula from `raw.githubusercontent.com` at
   launch and every 6 hours, to see if there's a newer version. Nothing is sent.
+- If you turn on the experimental usage pattern, what it learns (per-hour totals,
+  nothing else) stays on your Mac in `defaults read local.quotabar patterns`.
 - No analytics, no other network calls.
 
 ## Updates
@@ -76,8 +78,15 @@ same way. Your version is shown at the top right of the panel.
 - On HTTP 429 it doubles the wait, up to 30 minutes, and keeps showing the last reading.
 - Readings and back-off state are saved (`defaults read local.quotabar`), so a relaunch
   shows the last numbers without calling the endpoint.
-- Projections are linear: your average pace since the window opened, carried to the
-  reset. Expect them to be jumpy in the first day of a weekly window.
+- Forecasts are linear by default: your average pace since the window opened, carried
+  to the reset. Expect them to be jumpy in the first day of a weekly window.
+- **Experimental:** turn on `⋯` → **Learn my usage pattern** and every reading teaches
+  QuotaBar how much of each limit you use in each hour of the week (local time), with
+  older weeks fading out over about a month. The forecast then walks that profile to
+  the reset, scaled by how this window compares with a usual one, so quiet nights and
+  weekends stop counting as burn. Until it has 48 hours of readings for a limit, it
+  stays linear. The panel shows which one you're seeing. Learning only happens while
+  the option is on; turning it off keeps what it learned.
 - Homebrew installs start at login through `brew services`, which uses the stable
   `opt` path. After `brew upgrade` deletes the old version, QuotaBar notices within
   30 seconds and restarts itself on the new one. It also keeps a Finder alias at
