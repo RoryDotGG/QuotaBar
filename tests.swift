@@ -64,6 +64,19 @@ func check(_ label: String, _ json: String, _ want: [String]) {
     let out = heavy.runsOut.map { Calendar.current.dateComponents([.weekday, .hour, .minute], from: $0) }
     expect("heavy week: runs out Fri ~10:20 (got \(String(describing: heavy.runsOut)))",
            out?.weekday == 6 && out?.hour == 10 && abs((out?.minute ?? 0) - 20) <= 1)
+    // Tuesday night never seen (Mac asleep): borrow other nights, not the all-day mean.
+    var unseen = pat
+    for b in (2 * 24 + 18)..<(3 * 24 + 9) { unseen.profiles["weekly_all-"]!.buckets[b] = .init() }
+    let tueEvening = week3 + (24 + 17) * 3600
+    let night = unseen.forecast(weekly(week3, 32), now: tueEvening)  // a normal Mon + Tue
+    expect("unseen night hours stay quiet, ~80% at reset (got \(night.projected))", abs(night.projected - 80) < 1)
+    // Mac asleep 19:00-09:00 every night: quiet 14h gaps still teach zero.
+    var sleeper = Patterns()
+    for step in 0...(7 * 288) {
+        let t = mon + Double(step) * 300, h = Calendar.current.component(.hour, from: t)
+        if (9..<19).contains(h) { sleeper.record([weekly(mon, 0)], at: t) }
+    }
+    expect("quiet overnight gaps are learned (got \(sleeper.learnedHours("weekly_all-")))", sleeper.learnedHours("weekly_all-") > 150)
     var fresh = Patterns()
     fresh.record([weekly(week3, 5)], at: week3 + 3600)
     expect("untrained falls back to straight line", !fresh.forecast(weekly(week3, 16), now: monEvening).learned)

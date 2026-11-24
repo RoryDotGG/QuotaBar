@@ -101,7 +101,8 @@ struct Patterns: Codable {
             if abs(l.resetsAt.timeIntervalSince(p.lastReset)) > 3600 { (from, base) = (max(from, l.start), 0) }  // new window
             let dt = now.timeIntervalSince(from), delta = l.used - base
             // ponytail: usage in a gap is spread evenly across it; fine for 5-minute polls and short sleeps
-            if dt > 0, dt <= Self.maxGap, delta >= 0 {
+            // No usage across a gap of any length is exact: every hour in it was quiet.
+            if dt > 0, delta == 0 || (delta > 0 && dt <= Self.maxGap) {
                 Self.segments(from, now) { _, b, s in p.buckets[b].add(used: delta * s / dt, hours: s / 3600, at: now) }
             }
             (p.lastUsed, p.lastAt, p.lastReset) = (l.used, now, l.resetsAt)
@@ -114,7 +115,14 @@ struct Patterns: Codable {
     func forecast(_ l: Limit, now: Date) -> Forecast {
         guard let p = profiles[l.id], p.hours >= Self.learnedHours else { return l.linear(now) }
         let mean = p.buckets.reduce(0) { $0 + $1.used } / p.hours
-        func rate(_ b: Int) -> Double { p.buckets[b].hours >= 0.25 ? p.buckets[b].used / p.buckets[b].hours : mean }
+        func rate(_ b: Int) -> Double {
+            if p.buckets[b].hours >= 0.25 { return p.buckets[b].used / p.buckets[b].hours }
+            // Unseen hour of the week (Mac asleep): borrow the same hour on other days. The overall
+            // mean is weighted to when the Mac is awake, so it would predict burn at 6am.
+            let same = stride(from: b % 24, to: 168, by: 24).map { p.buckets[$0] }
+            let h = same.reduce(0) { $0 + $1.hours }
+            return h >= 0.25 ? same.reduce(0) { $0 + $1.used } / h : mean
+        }
         // Shape from history, level from this window: a heavier week than usual scales the rest of it.
         var expected = 0.0
         Self.segments(l.start, now) { _, b, s in expected += rate(b) * s / 3600 }
